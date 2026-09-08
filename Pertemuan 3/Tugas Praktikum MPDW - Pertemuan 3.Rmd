@@ -1,0 +1,414 @@
+---
+title: "Tugas Praktikum MPDW - Pertemuan 3"
+date: "`r Sys.Date()`"
+author: Qanita Basimah Kurnia
+output:
+  rmdformats::readthedown:
+    highlight: kate
+---
+
+## *Packages*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+library(car)
+```
+
+# Latihan 1 - Distributed Lag Model
+
+Misalkan terdapat set data pangsa pasar (*market share*) selama 20 periode dari suatu produk pasta gigi. Akan dilakukan pemodelan *distributed lag* dari pangsa pasar (Y) terhadap harga (X).
+
+## Impor Data
+
+```{r}
+data1 <- data.frame(
+  Period = 1:20,
+  Yt = c(3.63, 4.20, 3.33, 4.54, 2.89, 4.87, 4.90, 5.29, 6.18, 7.20,
+         7.25, 6.09, 6.80, 8.65, 8.43, 8.29, 7.18, 7.90, 8.45, 8.23),
+  Xt = c(0.97, 0.95, 0.99, 0.91, 0.98, 0.90, 0.89, 0.86, 0.85, 0.82,
+         0.79, 0.83, 0.81, 0.77, 0.76, 0.80, 0.83, 0.79, 0.76, 0.78)
+)
+str(data1)
+data1
+```
+
+## Pembagian Data
+
+```{r}
+#SPLIT DATA
+train1 <- data1[1:15,]
+test1 <- data1[16:20,]
+```
+
+```{r}
+#data time series
+train1.ts <- ts(train1)
+test1.ts <- ts(test1)
+data1.ts <- ts(data1)
+```
+
+## Model Koyck
+
+Model Koyck didasarkan pada asumsi bahwa semakin jauh jarak lag peubah independen dari periode sekarang maka semakin kecil pengaruh peubah lag terhadap peubah dependen.
+
+$$
+y_t=a(1-\lambda)+\beta_0X_t+\lambda Y_{t-1}+V_t
+$$
+
+### Pemodelan
+
+```{r}
+#MODEL KOYCK
+model1.koyck <- koyckDlm(x = train1$Xt, y = train1$Yt)
+summary(model1.koyck)
+AIC(model1.koyck)
+BIC(model1.koyck)
+```
+
+### Peramalan dan Akurasi
+
+```{r}
+fore1.koyck <- forecast(model = model1.koyck, x = test1$Xt, h = 5)
+fore1.koyck
+mape1.koyck <- MAPE(fore1.koyck$forecasts, test1$Yt)
+mape1.koyck #akurasi data test
+#akurasi data training
+GoF(model1.koyck)
+```
+
+## Regression with Distributed Lag (DLM)
+
+Pemodelan model *Regression with Distributed Lag* menggunakan `dLagM::dlm()` dengan beberapa panjang *lag* ($q$) untuk dibandingkan.
+
+### Pemodelan (Lag=2)
+
+```{r}
+model1.dlm <- dlm(x = train1$Xt, y = train1$Yt, q = 2)
+summary(model1.dlm)
+AIC(model1.dlm)
+BIC(model1.dlm)
+```
+
+### Peramalan dan Akurasi
+
+```{r}
+fore1.dlm <- forecast(model = model1.dlm, x = test1$Xt, h = 5)
+fore1.dlm
+mape1.dlm <- MAPE(fore1.dlm$forecasts, test1$Yt)
+mape1.dlm
+#akurasi data training
+GoF(model1.dlm)
+```
+
+### *Lag* Optimum
+
+```{r}
+#penentuan lag optimum
+finiteDLMauto(formula = Yt ~ Xt,
+              data = data.frame(train1), q.min = 1, q.max = 6,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+Berdasarkan output tersebut, dipilih lag optimum berdasarkan nilai AIC terkecil. Selanjutnya dilakukan pemodelan ulang menggunakan lag optimum tersebut.
+
+```{r}
+#model dlm dengan lag optimum
+model1.dlm2 <- dlm(x = train1$Xt, y = train1$Yt, q = 6)
+summary(model1.dlm2)
+AIC(model1.dlm2)
+BIC(model1.dlm2)
+```
+
+```{r}
+#peramalan dan akurasi
+fore1.dlm2 <- forecast(model = model1.dlm2, x = test1$Xt, h = 5)
+fore1.dlm2
+mape1.dlm2 <- MAPE(fore1.dlm2$forecasts, test1$Yt)
+mape1.dlm2
+#akurasi data training
+GoF(model1.dlm2)
+```
+
+## Model Autoregressive (ARDL)
+
+Sebagai pembanding tambahan, dilakukan juga pemodelan *Autoregressive Distributed Lag* (ARDL), di mana $Y_t$ dipengaruhi oleh $X_t$ pada waktu sekarang maupun lag-nya, serta oleh lag dari $Y_t$ itu sendiri.
+
+$$
+Y_t = a + \beta_0X_t+\beta_1X_{t-1}+\phi_1 Y_{t-1}+\varepsilon_t
+$$
+
+### Pemodelan
+
+```{r}
+model1.ardl <- ardlDlm(formula = Yt ~ Xt, data = train1, p = 1, q = 1)
+summary(model1.ardl)
+AIC(model1.ardl)
+BIC(model1.ardl)
+```
+
+### Peramalan dan Akurasi
+
+```{r}
+fore1.ardl <- forecast(model = model1.ardl, x = test1$Xt, h = 5)
+fore1.ardl
+mape1.ardl <- MAPE(fore1.ardl$forecasts, test1$Yt)
+mape1.ardl #akurasi data test
+#akurasi data training
+GoF(model1.ardl)
+```
+
+### *Lag* Optimum ($p$ dan $q$)
+
+Selanjutnya dicari kombinasi orde $p$ (lag X) dan $q$ (lag Y) yang optimum berdasarkan nilai AIC terkecil menggunakan `ardlBoundOrders()`.
+
+```{r}
+#penentuan lag optimum
+model1.ardl.opt <- ardlBoundOrders(data = data.frame(train1), ic = "AIC",
+                                    formula = Yt ~ Xt, max.p = 4, max.q = 4)
+model1.ardl.opt
+
+min_p1 <- c()
+for (i in 1:4) {
+  min_p1[i] <- min(model1.ardl.opt$Stat.table[[i]])
+}
+q1_opt <- which(min_p1 == min(min_p1, na.rm = TRUE))[1] #ambil 1 nilai jika ada ties
+p1_opt <- which(model1.ardl.opt$Stat.table[[q1_opt]] ==
+                  min(model1.ardl.opt$Stat.table[[q1_opt]], na.rm = TRUE))[1]
+
+data.frame("q_optimum" = q1_opt, "p_optimum" = p1_opt,
+           "AIC" = model1.ardl.opt$min.Stat)
+```
+
+Berdasarkan hasil di atas, didapatkan kombinasi $p$ dan $q$ optimum dengan nilai AIC terkecil. Selanjutnya dilakukan pemodelan ulang menggunakan orde optimum tersebut.
+
+```{r}
+model1.ardl2 <- ardlDlm(formula = Yt ~ Xt, data = train1, p = p1_opt, q = q1_opt)
+summary(model1.ardl2)
+AIC(model1.ardl2)
+BIC(model1.ardl2)
+```
+
+```{r}
+fore1.ardl2 <- forecast(model = model1.ardl2, x = test1$Xt, h = 5)
+fore1.ardl2
+mape1.ardl2 <- MAPE(fore1.ardl2$forecasts, test1$Yt)
+mape1.ardl2
+#akurasi data training
+GoF(model1.ardl2)
+```
+
+## Perbandingan Model
+
+```{r}
+akurasi1 <- matrix(c(mape1.koyck, mape1.dlm, mape1.dlm2, mape1.ardl, mape1.ardl2))
+row.names(akurasi1) <- c("Koyck", "DLM (q=2)", "DLM (lag optimum)",
+                          "ARDL (p=1,q=1)", "ARDL (lag optimum)")
+colnames(akurasi1) <- c("MAPE")
+akurasi1
+```
+
+Model terbaik dipilih berdasarkan nilai MAPE terkecil di antara kelima model di atas.
+
+### Penentuan Model Terbaik
+
+```{r}
+model1.terbaik <- rownames(akurasi1)[which.min(akurasi1[,"MAPE"])]
+cat("Model terbaik untuk Latihan 1 adalah", model1.terbaik,
+    "dengan nilai MAPE sebesar", round(min(akurasi1[,"MAPE"]), 5))
+```
+
+Berdasarkan output di atas, model dengan nilai MAPE terkecil dipilih sebagai model *distributed lag* terbaik untuk memodelkan pangsa pasar (Y) terhadap harga (X).
+
+### Plot Perbandingan
+
+```{r}
+par(mfrow = c(1,1))
+
+plot(test1$Xt, test1$Yt, type = "b", col = "black",
+     ylim = range(c(test1$Yt, fore1.koyck$forecasts, fore1.dlm$forecasts,
+                     fore1.dlm2$forecasts, fore1.ardl$forecasts, fore1.ardl2$forecasts)),
+     xlab = "Price (X)", ylab = "Market Share (Y)")
+
+points(test1$Xt, fore1.koyck$forecasts, col = "red");    lines(test1$Xt, fore1.koyck$forecasts, col = "red")
+points(test1$Xt, fore1.dlm$forecasts, col = "blue");     lines(test1$Xt, fore1.dlm$forecasts, col = "blue")
+points(test1$Xt, fore1.dlm2$forecasts, col = "orange");  lines(test1$Xt, fore1.dlm2$forecasts, col = "orange")
+points(test1$Xt, fore1.ardl$forecasts, col = "green");   lines(test1$Xt, fore1.ardl$forecasts, col = "green")
+points(test1$Xt, fore1.ardl2$forecasts, col = "purple"); lines(test1$Xt, fore1.ardl2$forecasts, col = "purple")
+
+legend("topleft",
+       c("Aktual", "Koyck", "DLM (q=2)", "DLM (lag optimum)", "ARDL (p=1,q=1)", "ARDL (lag optimum)"),
+       lty = 1, col = c("black", "red", "blue", "orange", "green", "purple"), cex = 0.7)
+```
+
+### Kesimpulan
+
+Kelima model *distributed lag* menghasilkan nilai MAPE data uji sebagai berikut: Koyck (0.0531), ARDL lag optimum (0.0627), DLM lag optimum (0.0637), ARDL(p=1,q=1) (0.0665), dan DLM(q=2) (0.0706). Model **Koyck** memberikan nilai MAPE terkecil sehingga dipilih sebagai model terbaik untuk menjelaskan hubungan pangsa pasar (Y) dengan harga (X).
+
+# Latihan 2 - ARDL (Autoregressive Distributed Lag)
+
+Dilakukan pemodelan ARDL yang sesuai menggunakan data penjualan (*Sales*) sebagai peubah dependen (Y) dan biaya iklan (*Advertising*) sebagai peubah independen (X) selama tahun 1975-2014.
+
+## Impor Data
+
+```{r}
+data2 <- data.frame(
+  Year = 1975:2014,
+  Yt = c(11.7, 12.0, 12.3, 12.8, 13.1, 13.6, 13.9, 14.4, 14.7, 15.3,
+         15.5, 15.8, 16.1, 16.6, 16.9, 16.7, 16.9, 17.2, 17.6, 17.9,
+         18.0, 17.9, 18.0, 18.2, 18.2, 18.3, 18.6, 19.2, 19.3, 19.5,
+         19.2, 19.3, 19.5, 20.0, 20.0, 19.9, 19.8, 19.9, 20.2, 21.0),
+  Xt = c(9.4, 9.6, 10.0, 10.4, 10.8, 10.9, 11.7, 12.2, 12.5, 12.9,
+         13.0, 13.2, 13.8, 14.2, 14.6, 14.4, 15.0, 15.4, 15.7, 15.9,
+         15.9, 16.0, 16.3, 16.2, 16.8, 17.3, 17.6, 18.1, 18.3, 18.5,
+         18.7, 18.9, 19.2, 20.0, 20.0, 20.3, 20.4, 21.0, 21.5, 22.1)
+)
+str(data2)
+data2
+```
+
+## Pembagian Data
+
+```{r}
+#SPLIT DATA
+train2 <- data2[1:32,]
+test2 <- data2[33:40,]
+```
+
+```{r}
+#data time series
+train2.ts <- ts(train2)
+test2.ts <- ts(test2)
+data2.ts <- ts(data2)
+```
+
+## Model Autoregressive (ARDL)
+
+Peubah dependen ($Y_t$) dipengaruhi oleh peubah independen pada waktu sekarang ($X_t$), serta oleh peubah dependen itu sendiri pada waktu yang lalu ($Y_{t-1}$).
+
+$$
+Y_t = a + \beta_0X_t+\beta_1X_{t-1}+\phi_1 Y_{t-1}+\varepsilon_t
+$$
+
+### Pemodelan
+
+```{r}
+model2.ardl <- ardlDlm(formula = Yt ~ Xt, data = train2, p = 1, q = 1)
+summary(model2.ardl)
+AIC(model2.ardl)
+BIC(model2.ardl)
+```
+
+### Peramalan dan Akurasi
+
+```{r}
+fore2.ardl <- forecast(model = model2.ardl, x = test2$Xt, h = 8)
+fore2.ardl
+mape2.ardl <- MAPE(fore2.ardl$forecasts, test2$Yt)
+mape2.ardl #akurasi data test
+#akurasi data training
+GoF(model2.ardl)
+```
+
+### *Lag* Optimum ($p$ dan $q$)
+
+Selanjutnya dicari kombinasi orde $p$ (lag X) dan $q$ (lag Y) yang optimum berdasarkan nilai AIC terkecil menggunakan `ardlBoundOrders()`.
+
+```{r}
+#penentuan lag optimum
+model2.ardl.opt <- ardlBoundOrders(data = data.frame(train2), ic = "AIC",
+                                    formula = Yt ~ Xt)
+model2.ardl.opt
+
+min_p <- c()
+for (i in 1:6) {
+  min_p[i] <- min(model2.ardl.opt$Stat.table[[i]])
+}
+q_opt <- which(min_p == min(min_p, na.rm = TRUE))[1] #ambil 1 nilai jika ada ties
+p_opt <- which(model2.ardl.opt$Stat.table[[q_opt]] ==
+                 min(model2.ardl.opt$Stat.table[[q_opt]], na.rm = TRUE))[1]
+
+data.frame("q_optimum" = q_opt, "p_optimum" = p_opt,
+           "AIC" = model2.ardl.opt$min.Stat)
+```
+
+Berdasarkan hasil di atas, didapatkan kombinasi $p$ dan $q$ optimum dengan nilai AIC terkecil. Selanjutnya dilakukan pemodelan ulang menggunakan orde optimum tersebut.
+
+```{r}
+model2.ardl2 <- ardlDlm(formula = Yt ~ Xt, data = train2, p = p_opt, q = q_opt)
+summary(model2.ardl2)
+AIC(model2.ardl2)
+BIC(model2.ardl2)
+```
+
+```{r}
+fore2.ardl2 <- forecast(model = model2.ardl2, x = test2$Xt, h = 8)
+fore2.ardl2
+mape2.ardl2 <- MAPE(fore2.ardl2$forecasts, test2$Yt)
+mape2.ardl2
+#akurasi data training
+GoF(model2.ardl2)
+```
+
+## Uji Diagnostik Model Terbaik
+
+```{r}
+cons_lm2 <- dynlm(Yt ~ Xt + L(Yt), data = train2.ts)
+
+#autokorelasi
+dwtest(cons_lm2)
+
+#heteroskedastisitas
+bptest(cons_lm2)
+
+#normalitas residual
+shapiro.test(residuals(cons_lm2))
+```
+
+-   Jika p-value \> 0.05 pada uji Durbin-Watson dan Breusch-Pagan → tidak ada autokorelasi/heteroskedastisitas.
+-   Jika p-value \> 0.05 pada uji Shapiro-Wilk → residual berdistribusi normal.
+
+## Perbandingan Model
+
+```{r}
+akurasi2 <- matrix(c(mape2.ardl, mape2.ardl2))
+row.names(akurasi2) <- c("ARDL (p=1,q=1)", "ARDL (lag optimum)")
+colnames(akurasi2) <- c("MAPE")
+akurasi2
+```
+
+Model terbaik dipilih berdasarkan nilai MAPE terkecil di antara model ARDL awal dan model ARDL dengan orde lag optimum.
+
+### Penentuan Model Terbaik
+
+```{r}
+model2.terbaik <- rownames(akurasi2)[which.min(akurasi2[,"MAPE"])]
+cat("Model terbaik untuk Latihan 2 adalah", model2.terbaik,
+    "dengan nilai MAPE sebesar", round(min(akurasi2[,"MAPE"]), 5))
+```
+
+Berdasarkan output di atas, model dengan nilai MAPE terkecil dipilih sebagai model ARDL terbaik untuk memodelkan penjualan (Y) terhadap biaya iklan (X).
+
+### Plot Perbandingan
+
+```{r}
+par(mfrow = c(1,1))
+
+plot(test2$Xt, test2$Yt, type = "b", col = "black",
+     ylim = range(c(test2$Yt, fore2.ardl$forecasts, fore2.ardl2$forecasts)),
+     xlab = "Advertising (X)", ylab = "Sales (Y)")
+
+points(test2$Xt, fore2.ardl$forecasts, col = "red");  lines(test2$Xt, fore2.ardl$forecasts, col = "red")
+points(test2$Xt, fore2.ardl2$forecasts, col = "blue"); lines(test2$Xt, fore2.ardl2$forecasts, col = "blue")
+
+legend("topleft",
+       c("Aktual", "ARDL (p=1,q=1)", "ARDL (lag optimum)"),
+       lty = 1, col = c("black", "red", "blue"), cex = 0.8)
+```
+### Kesimpulan
+
+Model **ARDL dengan orde lag optimum** (p=2, q=1) menghasilkan MAPE data uji sebesar 0.0160, lebih kecil dibanding model ARDL(p=1,q=1) yang menghasilkan MAPE 0.0193. Dengan demikian, model ARDL orde optimum dipilih sebagai model terbaik untuk menjelaskan hubungan penjualan (Y) dengan biaya iklan (X).
+
+Orde optimum p=2 dan q=1 menunjukkan bahwa penjualan pada periode saat ini dipengaruhi oleh biaya iklan pada periode berjalan dan satu periode sebelumnya, serta oleh penjualan itu sendiri pada satu periode sebelumnya. Artinya, efek promosi iklan terhadap penjualan tidak langsung habis dalam satu periode, melainkan masih terasa hingga periode berikutnya. Hasil uji diagnostik pada model ini juga mendukung kelayakannya: uji Durbin-Watson (p-value = 0.1235), Breusch-Pagan (p-value = 0.3779), dan Shapiro-Wilk (p-value = 0.9486) semuanya menghasilkan p-value > 0.05, yang berarti residual model tidak mengalami autokorelasi maupun heteroskedastisitas, dan berdistribusi normal. Dengan demikian seluruh asumsi klasik regresi terpenuhi dan model ARDL orde optimum layak digunakan untuk peramalan.
