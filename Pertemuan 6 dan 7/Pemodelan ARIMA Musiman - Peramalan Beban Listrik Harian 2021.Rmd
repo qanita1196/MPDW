@@ -1,0 +1,595 @@
+---
+title: "Pemodelan ARIMA Musiman - Peramalan Beban Listrik Harian 2021"
+author: "Qanita Basimah Kurnia - M0401241055"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+---
+
+## Packages
+
+```{r}
+library(ggplot2)
+library(readxl)
+library(tseries)
+library(MASS)
+library(forecast)
+library(TSA)
+library(TTR)
+library(aTSA)
+library(graphics)
+```
+
+## Data Beban Listrik
+
+### Impor Data
+
+Data yang digunakan adalah data **beban listrik harian** (satuan MW)
+dari 1 Januari sampai 31 Desember 2021 sehingga terdapat 365 pengamatan.
+
+```{r}
+data.energi <- read_excel("C:\\Users\\62895\\Downloads\\Data Energi 2021 (data kelompok) (1).xlsx", sheet = "Data")
+data.energi$Tanggal <- as.Date(data.energi$Tanggal)
+
+head(data.energi, 10)
+summary(data.energi$Beban_Listrik)
+```
+
+Beban listrik harian berkisar antara 44.072 MW sampai 70.036 MW dengan
+rata-rata sekitar 57.603 MW. Hanya peubah `Beban_Listrik` yang dimodelkan.
+
+```{r}
+beban   <- data.energi$Beban_Listrik
+n       <- length(beban)
+```
+
+### Pembagian Data Latih dan Data Uji
+
+Data dibagi menjadi data latih dan data uji dengan proporsi 80:20. Data
+latih terdiri dari 292 hari pertama (1 Januari - 19 Oktober 2021) dan
+data uji terdiri dari 73 hari terakhir (20 Oktober - 31 Desember 2021).
+
+```{r}
+n.train <- round(0.8 * n)
+train   <- beban[1:n.train]
+test    <- beban[(n.train + 1):n]
+
+# Data latih dibuat sebagai objek ts dengan periode musiman m = 7 (mingguan)
+train.ts <- ts(train, frequency = 7)
+
+c(n.train = length(train), n.test = length(test))
+```
+
+### Eksplorasi Data
+
+#### Plot Data Penuh
+
+```{r}
+plot(data.energi$Tanggal, beban,
+     type = "l", col = "navyblue", lwd = 1,
+     xlab = "Tanggal", ylab = "Beban Listrik (MW)",
+     main = "Plot Data Beban Listrik Harian 2021")
+abline(v = data.energi$Tanggal[n.train], col = "red", lty = 2)
+legend("topright", legend = "Batas data latih | uji",
+       col = "red", lty = 2, bty = "n")
+```
+
+Berdasarkan plot deret waktu, data beban listrik memiliki pola naik
+turun yang berulang dan rapat yang mengindikasikan adanya
+**pola musiman mingguan** (beban cenderung turun pada akhir pekan dan
+naik pada hari kerja). Selain itu, terlihat pula pergerakan tingkat
+beban jangka panjang, yaitu relatif tinggi pada awal tahun, menurun
+hingga pertengahan tahun, dan kembali naik pada akhir tahun.
+
+#### Plot Data Latih
+
+```{r}
+plot(data.energi$Tanggal[1:n.train], train,
+     type = "l", col = "navyblue",
+     xlab = "Tanggal", ylab = "Beban Listrik (MW)",
+     main = "Plot Beban Listrik Data Latih")
+```
+
+#### Plot Data Uji
+
+```{r}
+plot(data.energi$Tanggal[(n.train + 1):n], test,
+     type = "l", col = "darkgreen",
+     xlab = "Tanggal", ylab = "Beban Listrik (MW)",
+     main = "Plot Beban Listrik Data Uji")
+```
+
+Data uji mencakup periode Oktober sampai Desember. Terlihat tingkat
+beban cenderung naik memasuki musim dingin lalu turun tajam pada akhir
+Desember (kemungkinan terkait libur akhir tahun). Pola ini tidak
+seluruhnya terekam di data latih, sehingga akan berdampak pada akurasi.
+
+### Uji Stasioneritas Data
+
+#### Plot ACF
+
+```{r}
+acf(train.ts, lag.max = 28, main = "ACF Data Latih")
+```
+
+Plot ACF menurun sangat lambat dan berpola gelombang dengan puncak pada
+*lag* kelipatan 7 (7, 14, 21, 28). Hal ini menjadi indikasi bahwa data
+tidak stasioner dalam rataan dan mengandung pola musiman mingguan.
+
+#### Uji ADF
+
+```{r}
+tseries::adf.test(train.ts)
+```
+
+$H_0$ : Data tidak stasioner dalam rataan  
+$H_1$ : Data stasioner dalam rataan  
+
+Berdasarkan uji ADF tersebut, didapat *p-value* sebesar 0.8443 yang
+lebih besar dari taraf nyata 5% sehingga tak tolak $H_0$ dan menandakan
+bahwa data tidak stasioner dalam rataan. Hal ini sesuai dengan hasil
+eksplorasi menggunakan plot deret waktu dan plot ACF, sehingga
+ketidakstasioneran harus ditangani sebelum pemodelan.
+
+#### Plot Box-Cox
+
+```{r}
+index <- seq(1:length(train))
+
+# Box-Cox
+bc <- boxcox(train ~ index, lambda = seq(-2, 3, by = 0.1))
+
+# Nilai lambda optimum
+lambda <- bc$x[which.max(bc$y)]
+lambda
+
+# Selang kepercayaan 95% untuk lambda
+ci_lambda <- bc$x[bc$y > max(bc$y) - 0.5 * qchisq(0.95, 1)]
+
+# Batas bawah dan batas atas
+ci_lower <- min(ci_lambda)
+ci_upper <- max(ci_lambda)
+
+c(Batas_Bawah = ci_lower, Batas_Atas = ci_upper)
+```
+
+Uji Box-Cox pada model regresi terhadap waktu menghasilkan $\lambda$
+optimum sebesar 2,8 dengan selang kepercayaan 95% \[1,8; 3,0\] yang
+tidak memuat nilai satu. Namun, hasil ini perlu dilihat hati-hati karena
+nilai optimumnya berada di ujung rentang yang dicoba dan model regresi
+terhadap waktu tidak memperhitungkan pola musiman mingguan, sehingga
+sisaannya terkontaminasi oleh pola tersebut. Oleh karena itu, dilakukan
+pemeriksaan tambahan yang memperhitungkan periode musiman.
+
+```{r}
+# Metode Guerrero (memperhitungkan periode musiman)
+BoxCox.lambda(train.ts, method = "guerrero")
+```
+
+Metode Guerrero menghasilkan $\lambda \approx 1,04$ yang sangat dekat
+dengan satu. Dengan demikian data dapat dianggap **stasioner dalam
+ragam** dan tidak diperlukan transformasi.
+
+### Penanganan Ketidakstasioneran Data
+
+Data tidak stasioner dalam rataan dan memiliki pola musiman mingguan,
+sehingga dilakukan *differencing* musiman dengan *lag* 7 ($D = 1$,
+$m = 7$).
+
+```{r}
+# Differencing musiman lag 7
+train.d7 <- diff(train.ts, lag = 7)
+
+plot.ts(train.d7, lty = 1, xlab = "Waktu (minggu)",
+        ylab = "Data Difference Lag 7 Beban Listrik",
+        main = "Plot Difference Musiman (lag 7) Beban Listrik")
+abline(h = 0, col = "red", lty = 2)
+```
+
+Berdasarkan plot deret waktu, terlihat bahwa data hasil *differencing*
+sudah bergerak di sekitar nilai tengah nol, tidak terlihat lagi tren
+maupun pola gerigi mingguan yang dominan.
+
+#### Plot ACF
+
+```{r}
+acf(train.d7, lag.max = 28, main = "ACF Data Difference Lag 7")
+```
+
+Plot ACF sudah tidak menurun lambat pada *lag* kelipatan 7 seperti
+sebelumnya, sehingga ketidakstasioneran akibat pola musiman telah
+berhasil ditangani.
+
+#### Uji ADF
+
+```{r}
+tseries::adf.test(train.d7)
+```
+$H_0$ : Data tidak stasioner dalam rataan  
+$H_1$ : Data stasioner dalam rataan  
+
+Berdasarkan uji ADF tersebut, didapat *p-value* sebesar 0.01 yang lebih
+kecil dari taraf nyata 5% sehingga tolak $H_0$ dan menandakan bahwa data
+stasioner dalam rataan. Hal ini sesuai dengan hasil eksplorasi
+menggunakan plot deret waktu dan plot ACF, sehingga ketidakstasioneran
+sudah berhasil ditangani dan dapat dilanjutkan ke pemodelan.
+
+Dengan demikian orde *differencing* yang digunakan adalah $d = 0$ dan
+$D = 1$ dengan $m = 7$.
+
+### Identifikasi Model
+
+#### Plot ACF
+
+```{r}
+acf(train.d7, lag.max = 28, main = "ACF Data Difference Lag 7")
+```
+
+Plot ACF menunjukkan nilai yang signifikan pada *lag* 1, 2, dan 3 dan meluruh perlahan (*tails
+off*). Pada *lag* musiman (7, 8, 9). Pola ini mengindikasikan
+adanya komponen MA musiman, yaitu $Q = 1$.
+
+#### Plot PACF
+
+```{r}
+pacf(train.d7, lag.max = 28, main = "PACF Data Difference Lag 7")
+```
+
+Plot PACF cenderung *cuts off* setelah *lag* 1 dan
+terdapat nilai signifikan pada *lag* musiman 7. Jika
+plot ACF dianggap *tails off*, maka model tentatifnya adalah
+ARIMA(1,0,0)(0,1,1)$_7$. Jika ACF dianggap *cuts off* pada *lag* 3, maka
+model tentatifnya adalah ARIMA(0,0,3)(0,1,1)$_7$. Jika keduanya dianggap
+*tails off*, maka model tentatifnya adalah ARIMA(1,0,1)(0,1,1)$_7$.
+
+#### Plot EACF
+
+```{r}
+eacf(train.d7, ar.max = 7, ma.max = 13)
+```
+
+Karena masih terdapat sisa pengaruh musiman, segitiga
+yang terbentuk tidak terlalu tegas. Salah satu ujung segitiga yang dapat
+diambil adalah ARIMA(2,0,3)(0,1,1)$_7$. Dengan demikian, terdapat empat
+model tentatif yang akan diduga parameternya.
+
+### Pendugaan Parameter Model Tentatif
+#### ARIMA(1,0,0)(0,1,1)$_7$
+
+```{r}
+model1 <- Arima(train.ts, order = c(1,0,0),
+                seasonal = list(order = c(0,1,1), period = 7), method = "ML")
+summary(model1)          
+lmtest::coeftest(model1) 
+```
+
+#### ARIMA(0,0,3)(0,1,1)$_7$
+
+```{r}
+model2 <- Arima(train.ts, order = c(0,0,3),
+                seasonal = list(order = c(0,1,1), period = 7), method = "ML")
+summary(model2)          
+lmtest::coeftest(model2)
+```
+
+#### ARIMA(1,0,1)(0,1,1)$_7$
+
+```{r}
+model3 <- Arima(train.ts, order = c(1,0,1),
+                seasonal = list(order = c(0,1,1), period = 7), method = "ML")
+summary(model3)          
+lmtest::coeftest(model3)
+```
+
+#### ARIMA(2,0,3)(0,1,1)$_7$
+
+```{r}
+model4 <- Arima(train.ts, order = c(2,0,3),
+                seasonal = list(order = c(0,1,1), period = 7), method = "ML")
+summary(model4)          
+lmtest::coeftest(model4)
+```
+
+### Ringkasan AIC
+
+```{r}
+model_tentatif <- data.frame(
+  Model = c("ARIMA(1,0,0)(0,1,1)[7]",
+            "ARIMA(0,0,3)(0,1,1)[7]",
+            "ARIMA(1,0,1)(0,1,1)[7]",
+            "ARIMA(2,0,3)(0,1,1)[7]"),
+  AIC = c(AIC(model1), AIC(model2), AIC(model3), AIC(model4)),
+  BIC = c(BIC(model1), BIC(model2), BIC(model3), BIC(model4)),
+  Semua_Parameter_Signifikan = c("Ya", "Ya", "Ya", "Tidak")
+)
+model_tentatif
+```
+
+Model ARIMA(2,0,3)(0,1,1)$_7$ memiliki AIC terkecil, tetapi sebagian
+besar parameternya tidak signifikan sehingga tidak dipilih. Di antara
+model yang seluruh parameternya signifikan, AIC terkecil dimiliki oleh
+model ARIMA(1,0,1)(0,1,1)$_7$ sehingga model inilah yang dipilih untuk
+diperiksa lebih lanjut. Catatan: koefisien MA musiman (`sma1`) bernilai
+sangat dekat dengan -1. Hal ini menandakan pola mingguan pada data
+sangat stabil sepanjang tahun (mendekati deterministik), dan akan
+dibahas kembali pada bagian kesimpulan.
+
+### Analisis Sisaan
+
+Model terbaik hasil identifikasi kemudian dicek asumsi sisaannya. Sisaan
+model harus memenuhi asumsi normalitas, kebebasan, kehomogenan ragam,
+dan nilai tengah nol. Diagnostik model dilakukan secara eksplorasi dan
+uji formal.
+
+#### Eksplorasi Sisaan
+
+```{r}
+sisaan <- as.numeric(model3$residuals)
+
+par(mfrow = c(2,2))
+car::qqPlot(sisaan, ylab = "Sisaan")
+plot(c(1:length(sisaan)), sisaan, type = "o",
+     xlab = "Waktu", ylab = "Sisaan", main = "Sisaan vs Waktu")
+abline(h = 0, col = "red", lty = 2)
+acf(sisaan, lag.max = 28, main = "ACF Sisaan")
+pacf(sisaan, lag.max = 28, main = "PACF Sisaan")
+par(mfrow = c(1,1))
+```
+
+Berdasarkan plot kuantil-kuantil normal, titik-titik pada bagian ujung
+menyimpang jauh dari garis $45^{\circ}$ (ekor distribusi terlalu berat)
+sehingga sisaan secara eksploratif tidak menyebar normal. Plot sisaan
+terhadap waktu memperlihatkan beberapa sisaan yang relatif besar
+sehingga lebar pita sisaan tidak seragam, yang mengindikasikan ragam
+tidak homogen. Sementara itu, plot ACF dan PACF sisaan hanya menunjukkan
+sedikit nilai yang mendekati batas signifikansi sehingga secara visual
+sisaan cenderung saling bebas. Kondisi ini akan diuji lebih lanjut
+dengan uji formal.
+
+#### Uji Formal
+
+```{r}
+#1) Sisaan Menyebar Normal
+# Sisaan berskala MW (bukan skala baku), sehingga distandarisasi terlebih dahulu
+ks.test(as.numeric(scale(sisaan)), "pnorm")
+```
+$H_0$ : Sisaan menyebar normal  
+$H_1$ : Sisaan tidak menyebar normal  
+
+Uji normalitas yang digunakan adalah uji Kolmogorov-Smirnov (KS).
+Berdasarkan uji KS didapat *p-value* sebesar 0.0013 yang lebih kecil
+dari taraf nyata 5% sehingga tolak $H_0$ dan menandakan bahwa sisaan
+tidak menyebar normal.
+
+```{r}
+#2) Sisaan saling bebas/tidak ada autokorelasi
+# lag = 20, fitdf = banyaknya parameter ARMA (p + q + Q = 3)
+Box.test(sisaan, lag = 20, type = "Ljung", fitdf = 3)
+```
+$H_0$ : Sisaan saling bebas  
+$H_1$ : Sisaan tidak saling bebas  
+
+Berdasarkan uji Ljung-Box tersebut, didapat *p-value* sebesar 0.0082
+yang lebih kecil dari taraf nyata 5% sehingga tolak $H_0$ dan menandakan
+bahwa sisaan tidak saling bebas, yaitu masih terdapat autokorelasi yang
+belum tertangkap oleh model.
+
+```{r}
+#3) Sisaan homogen
+Box.test(sisaan^2, lag = 20, type = "Ljung")
+```
+$H_0$ : Ragam sisaan homogen  
+$H_1$ : Ragam sisaan tidak homogen  
+
+Berdasarkan uji Ljung-Box terhadap sisaan kuadrat tersebut, didapat
+*p-value* sebesar $8.5 \times 10^{-7}$ yang lebih kecil dari taraf nyata
+5% sehingga tolak $H_0$ dan menandakan bahwa ragam sisaan tidak homogen.
+
+```{r}
+#4) Nilai tengah sisaan sama dengan nol
+t.test(sisaan, mu = 0, conf.level = 0.95)
+```
+
+$H_0$ : nilai tengah sisaan sama dengan 0  
+$H_1$ : nilai tengah sisaan tidak sama dengan 0  
+
+Berdasarkan uji-t tersebut, didapat *p-value* sebesar 0.5450 yang lebih
+besar dari taraf nyata 5% sehingga gagal tolak $H_0$ dan menandakan
+bahwa nilai tengah sisaan sama dengan nol.
+
+Secara ringkas, model ARIMA(1,0,1)(0,1,1)$_7$ hanya memenuhi asumsi
+nilai tengah sisaan nol, sedangkan asumsi normalitas, kebebasan, dan
+kehomogenan ragam belum terpenuhi. Sebelum menggunakan model ini,
+dilakukan tahap *overfitting* untuk melihat apakah ada model yang lebih
+baik.
+
+### Overfitting
+
+Tahapan selanjutnya adalah *overfitting* yang dilakukan dengan menaikkan
+orde AR(p) dan MA(q) dari model ARIMA(1,0,1)(0,1,1)$_7$. Kandidat model
+*overfitting* adalah ARIMA(2,0,1)(0,1,1)$_7$ dan
+ARIMA(1,0,2)(0,1,1)$_7$.
+
+```{r}
+model3a <- Arima(train.ts, order = c(2,0,1),
+                 seasonal = list(order = c(0,1,1), period = 7), method = "ML")
+summary(model3a)      
+lmtest::coeftest(model3a) 
+
+model3b <- Arima(train.ts, order = c(1,0,2),
+                 seasonal = list(order = c(0,1,1), period = 7), method = "ML")
+summary(model3b)          
+lmtest::coeftest(model3b)
+```
+
+```{r}
+overfitting <- data.frame(
+  Model = c("ARIMA(1,0,1)(0,1,1)[7]", "ARIMA(2,0,1)(0,1,1)[7]",
+            "ARIMA(1,0,2)(0,1,1)[7]"),
+  AIC = c(AIC(model3), AIC(model3a), AIC(model3b)),
+  BIC = c(BIC(model3), BIC(model3a), BIC(model3b)),
+  Semua_Parameter_Signifikan = c("Ya", "Tidak", "Ya")
+)
+overfitting
+```
+
+Berdasarkan kedua model hasil *overfitting*, model
+ARIMA(2,0,1)(0,1,1)$_7$ memiliki AIC yang lebih besar dan parameter
+`ar1` yang tidak signifikan sehingga tidak dipilih. Sebaliknya, model
+ARIMA(1,0,2)(0,1,1)$_7$ memiliki AIC yang lebih kecil (5162.29
+dibandingkan 5171.53) dengan seluruh parameter signifikan. Oleh karena
+itu, model ARIMA(1,0,2)(0,1,1)$_7$ dipilih sebagai model terbaik dan
+dilakukan pengecekan sisaan kembali.
+
+### Model Terbaik : ARIMA(1,0,2)(0,1,1)$_7$
+
+```{r}
+model.final <- model3b
+summary(model.final)
+lmtest::coeftest(model.final)
+```
+
+Persamaan model yang terbentuk secara umum dapat dituliskan sebagai
+$(1-\phi_1 B)(1-B^7)Y_t = (1+\theta_1 B+\theta_2 B^2)(1+\Theta_1 B^7)\varepsilon_t$,
+dengan $\hat{\phi}_1 = 0,967$, $\hat{\theta}_1 = -0,202$,
+$\hat{\theta}_2 = -0,250$, dan $\hat{\Theta}_1 = -1,000$. Koefisien
+AR(1) yang besar menunjukkan bahwa beban listrik hari ini sangat
+dipengaruhi oleh beban hari sebelumnya (setelah pola musiman
+dihilangkan), sedangkan koefisien MA musiman yang mendekati -1
+menegaskan bahwa pola mingguan pada data sangat stabil.
+
+#### Analisis Sisaan Model Terbaik
+
+```{r}
+sisaan.f <- as.numeric(model.final$residuals)
+
+par(mfrow = c(2,2))
+car::qqPlot(sisaan.f, ylab = "Sisaan")
+plot(c(1:length(sisaan.f)), sisaan.f, type = "o",
+     xlab = "Waktu", ylab = "Sisaan", main = "Sisaan vs Waktu")
+abline(h = 0, col = "red", lty = 2)
+acf(sisaan.f, lag.max = 28, main = "ACF Sisaan")
+pacf(sisaan.f, lag.max = 28, main = "PACF Sisaan")
+par(mfrow = c(1,1))
+```
+
+```{r}
+#1) Sisaan menyebar normal
+ks.test(as.numeric(scale(sisaan.f)), "pnorm")
+
+#2) Sisaan saling bebas (fitdf = p + q + Q = 4)
+Box.test(sisaan.f, lag = 20, type = "Ljung", fitdf = 4)
+
+#3) Sisaan homogen
+Box.test(sisaan.f^2, lag = 20, type = "Ljung")
+
+#4) Nilai tengah sisaan sama dengan nol
+t.test(sisaan.f, mu = 0, conf.level = 0.95)
+```
+
+Pada model ARIMA(1,0,2)(0,1,1)$_7$, uji Ljung-Box menghasilkan *p-value*
+sebesar 0.196 yang lebih besar dari 5% sehingga gagal tolak $H_0$ dan
+**sisaan saling bebas** (asumsi kebebasan sudah terpenuhi, berbeda
+dengan model sebelumnya). Uji-t menghasilkan *p-value* 0.826 sehingga
+**nilai tengah sisaan sama dengan nol**. Namun, asumsi normalitas (KS
+*p-value* 0.0007) dan kehomogenan ragam (*p-value* 0.0006) belum
+terpenuhi.
+
+### Peramalan
+
+Peramalan dilakukan menggunakan fungsi `forecast()`. Karena model diduga
+langsung pada data asli (bukan pada data hasil *differencing*), hasil
+ramalan sudah berada pada skala asli sehingga tidak diperlukan *inverse
+differencing*. Peramalan dilakukan untuk 73 hari ke depan sesuai panjang
+data uji.
+
+```{r}
+ramalan <- forecast::forecast(model.final, h = length(test))
+data.ramalan <- as.numeric(ramalan$mean)
+plot(ramalan, xlab = "Waktu (minggu)", ylab = "Beban Listrik (MW)")
+```
+
+Berdasarkan hasil plot ramalan di atas, dapat dilihat bahwa ramalan
+ARIMA(1,0,2)(0,1,1)$_7$ mengikuti pola musiman mingguan (turun pada
+akhir pekan dan naik pada hari kerja) dan selang kepercayaan melebar
+seiring bertambahnya peramalan. Selanjutnya, dapat dicari nilai
+akurasi antara hasil ramalan dengan data uji sebagai berikut.
+
+```{r}
+perbandingan <- matrix(data = c(test, data.ramalan),
+                       nrow = length(test), ncol = 2)
+colnames(perbandingan) <- c("Aktual", "Hasil Forecast")
+perbandingan
+
+# Akurasi
+accuracy(data.ramalan, test)
+```
+
+```{r}
+# Plot data aktual dan forecast
+ts.plot(beban, col = "black", lty = 1,
+        xlab = "Waktu", ylab = "Beban Listrik (MW)")
+
+# Garis forecast
+lines((n.train + 1):n, data.ramalan, col = "blue", lty = 2, lwd = 2)
+legend("topright",
+       legend = c("Data Aktual", "Forecast"),
+       col = c("black", "blue"),
+       lty = c(1, 2), lwd = c(1, 2), bty = "n")
+```
+
+Berdasarkan ukuran akurasi pada data uji, diperoleh RMSE sekitar 4.910
+MW, MAE sekitar 4.174 MW, dan MAPE sekitar 6,86%. Artinya, rata-rata
+ramalan menyimpang sekitar 6,9% dari nilai aktual pada 73 hari ke depan
+sehingga model cukup baik digunakan untuk meramalkan beban listrik
+harian. Nilai ME yang positif (sekitar 2.910 MW) menunjukkan bahwa
+ramalan secara rata-rata sedikit lebih rendah dari nilai aktual. Hal ini
+wajar karena data uji (Oktober - Desember) mencakup kenaikan beban musim
+dingin dan penurunan kemungkinan akibat libur akhir tahun yang belum
+teramati pada data latih yang hanya mencakup satu tahun.
+
+### Perbandingan dengan Model ARIMA Non-Musiman
+
+Sebagai pembanding, dilakukan pemodelan ARIMA biasa, yaitu ARIMA(0,1,1)
+tanpa komponen musiman, untuk melihat manfaat memodelkan pola mingguan.
+
+```{r}
+model.nonmusiman <- Arima(ts(train), order = c(0,1,1), method = "ML")
+lmtest::coeftest(model.nonmusiman)
+
+# Uji kebebasan sisaan
+Box.test(model.nonmusiman$residuals, lag = 20, type = "Ljung", fitdf = 1)
+
+ramalan.nm <- forecast::forecast(model.nonmusiman, h = length(test))
+
+perbandingan.model <- rbind(
+  "ARIMA(0,1,1) non-musiman" = accuracy(as.numeric(ramalan.nm$mean), test)[1, c("RMSE", "MAE", "MAPE")],
+  "ARIMA(1,0,2)(0,1,1)[7]"   = accuracy(data.ramalan, test)[1, c("RMSE", "MAE", "MAPE")]
+)
+round(perbandingan.model, 2)
+```
+
+```{r}
+plot(data.energi$Tanggal, beban, type = "l", col = "gray40",
+     xlab = "Tanggal", ylab = "Beban Listrik (MW)",
+     main = "Perbandingan Ramalan pada Data Uji")
+tgl.uji <- data.energi$Tanggal[(n.train + 1):n]
+lines(tgl.uji, as.numeric(ramalan.nm$mean), col = "darkorange", lwd = 2)
+lines(tgl.uji, data.ramalan, col = "blue", lwd = 2, lty = 2)
+abline(v = data.energi$Tanggal[n.train], col = "red", lty = 3)
+legend("topright",
+       legend = c("Aktual", "ARIMA(0,1,1)", "ARIMA(1,0,2)(0,1,1)[7]"),
+       col = c("gray40", "darkorange", "blue"), lty = c(1, 1, 2), lwd = 2, bty = "n")
+```
+
+Model ARIMA(0,1,1) tanpa komponen musiman menghasilkan ramalan berupa
+garis mendatar yang tidak dapat menirukan pola naik turun mingguan, dan
+sisaannya masih memiliki autokorelasi yang sangat kuat (uji Ljung-Box
+*p-value* $< 2.2 \times 10^{-16}$). Model tersebut juga memiliki akurasi
+yang lebih rendah (RMSE sekitar 6.375 MW dan MAPE sekitar 8,70%)
+dibandingkan model musiman (RMSE sekitar 4.910 MW dan MAPE sekitar
+6,86%). Hal ini menunjukkan bahwa pola musiman mingguan pada data beban
+listrik perlu dimodelkan secara eksplisit.
+
+
